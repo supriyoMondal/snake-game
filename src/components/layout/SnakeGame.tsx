@@ -40,7 +40,9 @@ const SnakeGame = () => {
   };
 
   useEffect(() => {
-    initializeGame("supriyomondal");
+    if (import.meta.env.MODE === "development") {
+      initializeGame("supriyomondal");
+    }
   }, []);
 
   return (
@@ -50,7 +52,7 @@ const SnakeGame = () => {
       {gameState === "notStarted" ? (
         <StartGameModal initializeGame={initializeGame} />
       ) : (
-        <div className="relative w-full h-[600px] md:h-[700px] rounded-lg overflow-hidden mt-4">
+        <div className="relative w-full sm:h-[600px] max-h-[700px]  rounded-lg overflow-hidden mt-4">
           {gameState === "finished" && (
             <div className="absolute inset-0 flex items-center justify-center z-10 bg-black/70">
               <div className="bg-card p-8 rounded-lg text-center">
