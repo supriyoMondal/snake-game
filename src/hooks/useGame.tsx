@@ -13,11 +13,14 @@ const GAME_WIDTH = 3000;
 const GAME_HEIGHT = 3000;
 const VIEWPORT_WIDTH = 800;
 const VIEWPORT_HEIGHT = 600;
-const FOOD_COUNT = 1200;
+const FOOD_COUNT_PER_GRID = 12;
 const AI_SNAKE_COUNT = 10;
 const INITIAL_SNAKE_SIZE = 20;
-const FOOD_SIZE = 5;
+const FOOD_SIZE = 4;
 const MINIMAP_SIZE = 100;
+const GRID_SIZE = 12;
+const AREA_X_PER_GRID = GAME_HEIGHT / GRID_SIZE;
+const AREA_Y_PER_GRID = GAME_WIDTH / GRID_SIZE;
 
 const staticConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -45,11 +48,16 @@ type Food = {
   color: string;
 };
 
-function generateNewFood(scene: Phaser.Scene): Food {
-  const foodX = Math.random() * GAME_WIDTH;
-  const foodY = Math.random() * GAME_HEIGHT;
+function generateNewFood(
+  scene: Phaser.Scene,
+  gridX: number,
+  gridY: number
+): Food {
+  const foodX = Math.random() * AREA_X_PER_GRID + gridX * AREA_X_PER_GRID;
+  const foodY = Math.random() * AREA_Y_PER_GRID + gridY * AREA_Y_PER_GRID;
+
   const foodColor = getRandomFoodColor();
-  const foodValue = Math.floor(Math.random() * 3) + 1;
+  const foodValue = Math.floor(Math.random() * 2) + 1;
   const mainColor = Phaser.Display.Color.HexStringToColor(foodColor).color;
 
   const size = FOOD_SIZE + foodValue;
@@ -65,7 +73,7 @@ function generateNewFood(scene: Phaser.Scene): Food {
   // Pulse individually with random delay
   scene.tweens.add({
     targets: [food, glow],
-    scale: { from: 1, to: 1.3 },
+    scale: { from: 1, to: 1.2 },
     duration: 500,
     yoyo: true,
     repeat: -1,
@@ -81,6 +89,41 @@ function generateNewFood(scene: Phaser.Scene): Food {
   };
 }
 
+const destroyFood = (food: Food) => {
+  food.sprite.destroy(true);
+  food.glow.destroy(true);
+};
+
+const createNewFoodArray = (scene: Phaser.Scene, foods: Food[][][]) => {
+  let foodCount = 0;
+  for (let i = 0; i < GRID_SIZE; i++) {
+    for (let j = 0; j < GRID_SIZE; j++) {
+      if (!foods[i]) foods[i] = [];
+      foods[i][j] = Array.from({ length: FOOD_COUNT_PER_GRID }, () =>
+        generateNewFood(scene, i, j)
+      );
+      foodCount += FOOD_COUNT_PER_GRID;
+    }
+  }
+  console.log(foodCount);
+
+  return foods;
+};
+
+function getMinimapPosition(x: number, y: number) {
+  return {
+    x: (x / GAME_WIDTH) * MINIMAP_SIZE,
+    y: (y / GAME_HEIGHT) * MINIMAP_SIZE,
+  };
+}
+
+function getIndexAtGridPosition(x: number, y: number) {
+  return {
+    x: Math.min(Math.floor(x / AREA_X_PER_GRID), GRID_SIZE - 1),
+    y: Math.min(Math.floor(y / AREA_Y_PER_GRID), GRID_SIZE - 1),
+  };
+}
+
 type Segment = Phaser.GameObjects.Arc;
 type BotSnake = {
   head: Phaser.GameObjects.Arc;
@@ -92,6 +135,18 @@ type BotSnake = {
   color: string;
   name: string;
   id: string;
+  score: number;
+};
+
+const getSpeedBySize = (size: number) => {
+  const baseSpeed = 6;
+  const minSpeed = 2;
+
+  const decayRate = 0.25;
+
+  const speed = baseSpeed - Math.log(size + 1) * decayRate;
+
+  return Math.max(minSpeed, speed);
 };
 
 const useGame = (
@@ -103,7 +158,7 @@ const useGame = (
   }
 ) => {
   const gameRef = useRef<Phaser.Game>(null);
-  const foods: Food[] = [];
+  const foods: Food[][][] = [];
   let playerSize = INITIAL_SNAKE_SIZE;
   const score = useRef(0);
   let player: Segment;
@@ -123,10 +178,6 @@ const useGame = (
 
   // bots
   const botSnakes: BotSnake[] = [];
-  const botColors: string[] = [];
-  const botNames: string[] = [];
-  const botScores: number[] = [];
-
   const isMobile = useMobile();
 
   function preload(this: Phaser.Scene) {}
@@ -171,9 +222,7 @@ const useGame = (
     camera.setZoom(1);
 
     // create food
-    for (let i = 0; i < FOOD_COUNT; i++) {
-      foods.push(generateNewFood(this));
-    }
+    createNewFoodArray(this, foods);
 
     const minimapX = this.cameras.main.width - MINIMAP_SIZE - 10;
     const minimapY = this.cameras.main.height - MINIMAP_SIZE - 10;
@@ -192,6 +241,7 @@ const useGame = (
 
     createBoTSnakes(this);
   }
+
   function update(this: Phaser.Scene) {
     if (!isMobile) {
       const pointer = this.input.activePointer;
@@ -205,7 +255,7 @@ const useGame = (
       );
     }
 
-    const playerSpeed = 3 + playerSize / 84;
+    const playerSpeed = getSpeedBySize(playerSize);
     const dx = Math.cos(playerDirection) * playerSpeed;
     const dy = Math.sin(playerDirection) * playerSpeed;
 
@@ -226,7 +276,9 @@ const useGame = (
 
     updateSnakeSegments(playerSegments, prevX, prevY);
 
-    checkFoodCollision(this, player, playerSegments);
+    checkFoodCollision(this, { x: player.x, y: player.y }, playerSegments);
+
+    // checkCollisionWithBotSnakes(this, { x: player.x, y: player.y });
 
     drawMinimap();
 
@@ -243,42 +295,65 @@ const useGame = (
     minimap.lineStyle(1, 0xffffff, 1);
     minimap.strokeRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
 
-    const playerMinimapX = (player.x / GAME_WIDTH) * MINIMAP_SIZE;
-    const playerMinimapY = (player.y / GAME_HEIGHT) * MINIMAP_SIZE;
+    const playerMinimap = getMinimapPosition(player.x, player.y);
 
     minimap.fillStyle(
       Phaser.Display.Color.HexStringToColor(playerColor).color,
       1
     );
-    minimap.fillCircle(playerMinimapX, playerMinimapY, 3);
+    minimap.fillCircle(playerMinimap.x, playerMinimap.y, 4);
 
-    const viewportX = (camera.scrollX / GAME_WIDTH) * MINIMAP_SIZE;
-    const viewportY = (camera.scrollY / GAME_HEIGHT) * MINIMAP_SIZE;
-    const viewportWidth = (camera.width / GAME_WIDTH) * MINIMAP_SIZE;
-    const viewportHeight = (camera.height / GAME_HEIGHT) * MINIMAP_SIZE;
+    playerSegments.forEach((segment) => {
+      const segmentMinimap = getMinimapPosition(segment.x, segment.y);
+      minimap.fillStyle(
+        Phaser.Display.Color.HexStringToColor(playerColor).color,
+        1
+      );
+      minimap.fillCircle(segmentMinimap.x, segmentMinimap.y, 3);
+    });
+
+    botSnakes.forEach((snake) => {
+      const head = snake.head;
+      minimap.fillStyle(Phaser.Display.Color.HexStringToColor("#ccc").color, 1);
+      const headMinimap = getMinimapPosition(head.x, head.y);
+      minimap.fillCircle(headMinimap.x, headMinimap.y, 4);
+
+      snake.segments.forEach((segment) => {
+        const segmentMinimap = getMinimapPosition(segment.x, segment.y);
+        minimap.fillStyle(
+          Phaser.Display.Color.HexStringToColor("#ccc").color,
+          1
+        );
+        minimap.fillCircle(segmentMinimap.x, segmentMinimap.y, 3);
+      });
+    });
 
     minimap.lineStyle(1, 0xffffff, 1);
-    minimap.strokeRect(viewportX, viewportY, viewportWidth, viewportHeight);
   }
 
   function checkFoodCollision(
     scene: Phaser.Scene,
-    snakeHead: Phaser.GameObjects.Arc,
+    headPosition: { x: number; y: number },
     snakeSegments: Phaser.GameObjects.Arc[]
   ) {
-    for (let i = 0; i < foods.length; i++) {
-      const food = foods[i];
+    const { x: xPos, y: yPos } = getIndexAtGridPosition(
+      headPosition.x,
+      headPosition.y
+    );
+
+    const possibleCollisions = foods[xPos][yPos];
+
+    for (let i = 0; i < possibleCollisions.length; i++) {
+      const food = possibleCollisions[i];
       const distance = Phaser.Math.Distance.Between(
-        snakeHead.x,
-        snakeHead.y,
+        headPosition.x,
+        headPosition.y,
         food.sprite.x,
         food.sprite.y
       );
       if (distance < playerSize / 10 + FOOD_SIZE) {
-        food.sprite.destroy();
-        food.glow.destroy();
-        foods[i] = generateNewFood(scene);
-
+        destroyFood(food);
+        possibleCollisions[i] = generateNewFood(scene, xPos, yPos);
         growSnake(scene, snakeSegments, food.value);
       }
     }
@@ -287,21 +362,36 @@ const useGame = (
   function growSnake(
     scene: Phaser.Scene,
     snakeSegments: Phaser.GameObjects.Arc[],
-    foodValue: number
+    foodValue: number,
+    botSnake?: BotSnake
   ) {
     for (let i = 0; i < foodValue; i++) {
       const lastSegment = snakeSegments[snakeSegments.length - 1];
+
+      const newRadius = Math.max(5, playerSize / 15);
       const newSegment = scene.add.circle(
         lastSegment.x,
         lastSegment.y,
-        Math.max(5, playerSize / 15),
-        Phaser.Display.Color.HexStringToColor(playerColor).color
+        newRadius,
+        Phaser.Display.Color.HexStringToColor(botSnake?.color || playerColor)
+          .color
       );
+
+      snakeSegments.forEach((segment) => {
+        if (segment.scene) {
+          segment.setRadius(newRadius);
+        }
+      });
       snakeSegments.push(newSegment);
     }
 
-    playerSize += foodValue;
-    score.current += foodValue;
+    if (botSnake) {
+      botSnake.size += foodValue;
+      botSnake.score += foodValue;
+    } else {
+      playerSize += foodValue;
+      score.current += foodValue;
+    }
   }
 
   function createBoTSnakes(scene: Phaser.Scene) {
@@ -342,11 +432,8 @@ const useGame = (
         color: snakeColor,
         name: snakeName,
         id: `snake-${i}`,
+        score: 0,
       });
-
-      botNames.push(snakeName);
-      botColors.push(snakeColor);
-      botScores.push(snakeSize - INITIAL_SNAKE_SIZE);
     }
   }
 
@@ -372,7 +459,7 @@ const useGame = (
         botSnake.direction +=
           Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), 0.1);
       }
-      const botSpeed = 3 + playerSize / 84;
+      const botSpeed = getSpeedBySize(botSnake.size);
       const dx = Math.cos(botSnake.direction) * botSpeed;
       const dy = Math.sin(botSnake.direction) * botSpeed;
 
@@ -393,23 +480,27 @@ const useGame = (
 
       // Update AI segments
       updateSnakeSegments(botSnake.segments, prevX, prevY);
-      console.log(scene);
+      const { x: xPos, y: yPos } = getIndexAtGridPosition(
+        botSnake.head.x,
+        botSnake.head.y
+      );
 
-      // for (let j = 0; j < foods.length; j++) {
-      //   const food = foods[j];
-      //   const distance = Phaser.Math.Distance.Between(
-      //     botSnake.head.x,
-      //     botSnake.head.y,
-      //     food.sprite.x,
-      //     food.sprite.y
-      //   );
+      const possibleCollisions = foods[xPos][yPos];
 
-      //   if (distance < botSnake.size / 10 + FOOD_SIZE) {
-      //     food.sprite.destroy();
-      //     food.glow.destroy();
-      //     foods[i] = generateNewFood(scene);
-      //   }
-      // }
+      possibleCollisions.forEach((food, foodIndex) => {
+        const distance = Phaser.Math.Distance.Between(
+          botSnake.head.x,
+          botSnake.head.y,
+          food.sprite.x,
+          food.sprite.y
+        );
+
+        if (distance < botSnake.size / 10 + FOOD_SIZE) {
+          destroyFood(food);
+          possibleCollisions[foodIndex] = generateNewFood(scene, xPos, yPos);
+          growSnake(scene, botSnake.segments, food.value, botSnake);
+        }
+      });
     }
   }
 
@@ -417,7 +508,11 @@ const useGame = (
     let closestFood = null;
     let closestDistance = radius;
 
-    for (const food of foods) {
+    const { x: xPos, y: yPos } = getIndexAtGridPosition(x, y);
+
+    const possibleCollisions = foods[xPos][yPos];
+
+    for (const food of possibleCollisions) {
       const distance = Phaser.Math.Distance.Between(
         x,
         y,
@@ -470,6 +565,13 @@ const useGame = (
       playerDirection = 0;
       joystickVector.x = 0;
       joystickVector.y = 0;
+
+      playerSegments.forEach((segment) => segment.destroy(true));
+      botSnakes.forEach((snake) => {
+        snake.segments.forEach((segment) => segment.destroy(true));
+        snake.head.destroy(true);
+      });
+      botSnakes.length = 0;
     }
   }
 
